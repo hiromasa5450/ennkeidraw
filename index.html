@@ -1,0 +1,1027 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>円を正確に描くゲーム</title>
+  <style>
+    :root{
+      --bg:#0f1115; --card:#171a21; --text:#e8e8ea; --muted:#a6a6ad;
+      --accent:#7aa2f7; --danger:#ff6b6b; --ok:#6ee7b7;
+      --shadow: 0 12px 30px rgba(0,0,0,.35);
+      --radius: 16px;
+    }
+    *{ box-sizing:border-box; }
+    body{
+      margin:0; background:var(--bg); color:var(--text);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+      min-height:100vh;
+      display:flex; justify-content:center;
+    }
+    .wrap{ width:min(980px, 100%); padding:14px; }
+    .card{
+      background:var(--card); border-radius:var(--radius);
+      box-shadow:var(--shadow);
+      padding:14px;
+    }
+    h1{ font-size:20px; margin:0 0 10px; }
+    .muted{ color:var(--muted); font-size:13px; line-height:1.5; }
+    .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .spacer{ height:10px; }
+    input{
+      width:min(360px, 100%);
+      padding:12px 12px;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,.10);
+      background:#0b0d12;
+      color:var(--text);
+      outline:none;
+      font-size:16px;
+    }
+    button{
+      appearance:none; border:none; cursor:pointer;
+      padding:12px 14px;
+      border-radius:12px;
+      background:#242a37;
+      color:var(--text);
+      font-weight:700;
+      font-size:14px;
+    }
+    button.primary{ background:var(--accent); color:#0b0d12; }
+    button.danger{ background:var(--danger); color:#0b0d12; }
+    button:disabled{ opacity:.55; cursor:not-allowed; }
+    .pill{
+      display:inline-block; padding:6px 10px; border-radius:999px;
+      background:rgba(255,255,255,.07);
+      font-size:12px; color:var(--muted);
+    }
+
+    /* Views */
+    .view{ display:none; }
+    .view.active{ display:block; }
+
+    /* Game layout */
+    .gameTop{
+      display:flex; gap:10px; flex-wrap:wrap; align-items:center; justify-content:space-between;
+      margin-bottom:10px;
+    }
+    .gameArea{
+      position:relative;
+      border-radius:14px;
+      overflow:hidden;
+      background:#0b0d12;
+      border:1px solid rgba(255,255,255,.08);
+      height:min(72vh, 640px);
+    }
+    canvas{
+      width:100%;
+      height:100%;
+      display:block;
+      touch-action:none; /* 重要: スクロール/ピンチ抑止 */
+    }
+    .hud{
+      position:absolute; left:10px; top:10px;
+      display:flex; gap:8px; flex-wrap:wrap;
+      pointer-events:none;
+    }
+    .hud .pill{ pointer-events:none; }
+
+    .bottomBar{
+      display:flex; gap:10px; flex-wrap:wrap;
+      margin-top:10px;
+      align-items:center;
+      justify-content:space-between;
+    }
+    .status{
+      min-height:18px;
+      font-size:13px;
+      color:var(--muted);
+    }
+
+    /* Leaderboard */
+    .lbList{ margin-top:10px; }
+    .lbItem{
+      display:flex; justify-content:space-between; align-items:center;
+      padding:10px 12px;
+      border-radius:12px;
+      background:rgba(255,255,255,.05);
+      margin-bottom:8px;
+      border:1px solid rgba(255,255,255,.06);
+    }
+    .lbLeft{ display:flex; gap:10px; align-items:baseline; }
+    .rank{ width:32px; text-align:right; color:var(--muted); font-variant-numeric: tabular-nums; }
+    .name{ font-weight:700; }
+    .score{ font-weight:800; font-variant-numeric: tabular-nums; }
+    .tiny{ font-size:12px; color:var(--muted); }
+    .hl{ outline:2px solid rgba(122,162,247,.55); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+
+    <!-- TITLE -->
+    <section id="viewTitle" class="view active">
+      <div class="card">
+        <h1>円を正確に描くゲーム</h1>
+        <div class="muted">
+          1本指で、1回で円を描いてください。指を離したら自動判定。<br>
+          円はどこに描いてもOK。ただし画面端に食い込んだら無効。
+        </div>
+        <div class="spacer"></div>
+
+        <div class="row">
+          <input id="nameInput" type="text" inputmode="text" autocomplete="nickname"
+                 maxlength="12" placeholder="名前（ランキング表示用）" />
+          <button id="btnStart" class="primary">スタート</button>
+          <button id="btnGoLB">ランキング</button>
+        </div>
+
+        <div class="spacer"></div>
+        <div class="muted">
+          注意: プレイ中はガイド表示なし。結果画面では採点用の理想円を重ねて見られるようにする（上達用）。
+        </div>
+      </div>
+    </section>
+
+    <!-- GAME -->
+    <section id="viewGame" class="view">
+      <div class="card">
+        <div class="gameTop">
+          <div>
+            <div class="pill">プレイヤー: <span id="playerNameLabel">-</span></div>
+          </div>
+          <div class="row">
+            <button id="btnReset" class="danger">やり直す</button>
+            <button id="btnBackTitle">タイトルへ</button>
+          </div>
+        </div>
+
+        <div class="gameArea">
+          <canvas id="canvas"></canvas>
+          <div class="hud">
+            <span class="pill" id="hudHint">1本指で円を描く</span>
+            <span class="pill" id="hudTimer">0.0s</span>
+          </div>
+        </div>
+
+        <div class="bottomBar">
+          <div class="status" id="gameStatus"></div>
+          <div class="row">
+            <span class="pill">coverage&lt;0.85 は大幅減点</span>
+            <span class="pill">指を離したら判定</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RESULT -->
+    <section id="viewResult" class="view">
+      <div class="card">
+        <h1>結果</h1>
+        <div class="row">
+          <div class="pill">スコア: <span id="scoreLabel" style="font-weight:900;">-</span></div>
+          <div class="pill">評価: <span id="commentLabel">-</span></div>
+          <div class="pill tiny" id="detailLabel">-</div>
+        </div>
+        <div class="spacer"></div>
+
+        <div class="muted">
+          上達用に、結果では「採点に使った理想円」を重ねて表示する（プレイ中は出さない）。
+        </div>
+
+        <div class="spacer"></div>
+        <div class="row">
+          <button id="btnAgain" class="primary">もう一回</button>
+          <button id="btnSubmit">スコア送信</button>
+          <button id="btnToLB">ランキング</button>
+          <button id="btnResultToTitle">タイトルへ</button>
+        </div>
+
+        <div class="spacer"></div>
+        <div class="status" id="resultStatus"></div>
+      </div>
+    </section>
+
+    <!-- LEADERBOARD -->
+    <section id="viewLB" class="view">
+      <div class="card">
+        <h1>共通ランキング（上位20）</h1>
+        <div class="muted">
+          自己ベストだけが反映される。<br>
+          同名が複数いてもOK。
+        </div>
+
+        <div class="spacer"></div>
+        <div class="row">
+          <button id="btnLBBack">戻る</button>
+          <button id="btnLBReload">更新</button>
+          <span class="pill">自分のベスト: <span id="myBestLabel">-</span></span>
+        </div>
+
+        <div class="lbList" id="lbList"></div>
+        <div class="status" id="lbStatus"></div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Firebase (Compat / Global) -->
+  <script defer src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script defer src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+  <script defer src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
+
+  <script>
+  'use strict';
+
+  // ======================
+  // Firebase 設定（あなたの値）
+  // ======================
+  const firebaseConfig = {
+    apiKey: "AIzaSyD3fFDQH49EyOWAxVKBULaWazJiZoOnoEM",
+    authDomain: "ennwoegake.firebaseapp.com",
+    projectId: "ennwoegake",
+    storageBucket: "ennwoegake.firebasestorage.app",
+    messagingSenderId: "512293235678",
+    appId: "1:512293235678:web:a4d59d0d3234b4614e8b4f",
+    databaseURL: "https://ennwoegake-default-rtdb.firebaseio.com",
+    measurementId: "G-G2FSRLP3GB"
+  };
+
+  // ======================
+  // ゲーム設定
+  // ======================
+  const SETTINGS = {
+    timeLimitSec: 8.0,
+    edgeMargin: 10,             // 画面端判定の余白（CSS px）
+    resampleStep: 4,            // リサンプル間隔（CSS px）
+    minPoints: 60,              // 最低点数
+    minRadius: 18,              // 最低半径
+    scoreK: 10,                 // expカーブ係数
+    perfectE: 0.002,            // E閾値以下で100点
+    coveragePenaltyThreshold: 0.85,
+  };
+
+  // ======================
+  // DOM
+  // ======================
+  const $ = (id) => document.getElementById(id);
+
+  const viewTitle = $('viewTitle');
+  const viewGame  = $('viewGame');
+  const viewResult= $('viewResult');
+  const viewLB    = $('viewLB');
+
+  const nameInput = $('nameInput');
+  const btnStart = $('btnStart');
+  const btnGoLB = $('btnGoLB');
+
+  const playerNameLabel = $('playerNameLabel');
+  const btnReset = $('btnReset');
+  const btnBackTitle = $('btnBackTitle');
+
+  const canvas = $('canvas');
+  const gameStatus = $('gameStatus');
+  const hudTimer = $('hudTimer');
+  const hudHint = $('hudHint');
+
+  const scoreLabel = $('scoreLabel');
+  const commentLabel = $('commentLabel');
+  const detailLabel = $('detailLabel');
+  const btnAgain = $('btnAgain');
+  const btnSubmit = $('btnSubmit');
+  const btnToLB = $('btnToLB');
+  const btnResultToTitle = $('btnResultToTitle');
+  const resultStatus = $('resultStatus');
+
+  const btnLBBack = $('btnLBBack');
+  const btnLBReload = $('btnLBReload');
+  const lbList = $('lbList');
+  const lbStatus = $('lbStatus');
+  const myBestLabel = $('myBestLabel');
+
+  // ======================
+  // 状態
+  // ======================
+  const LS_NAME = 'circle_game_name';
+  const LS_BEST = 'circle_game_best';
+
+  let playerName = '';
+  let localBestScore = 0;
+
+  // pointer tracking
+  let ctx, dpr = 1;
+  let activePointerId = null;
+  let drawing = false;
+  let startTime = 0;
+  let points = []; // {x,y,t}
+  let lastPoint = null;
+
+  // last evaluation
+  let lastEval = null; // {valid, score, E, mae, maxe, close, coverage, circle:{cx,cy,r}, reason}
+
+  // Firebase state
+  let firebaseReady = false;
+  let uid = null;
+  let db = null;
+
+  // ======================
+  // View helper
+  // ======================
+  function showView(which){
+    for(const v of [viewTitle, viewGame, viewResult, viewLB]) v.classList.remove('active');
+    which.classList.add('active');
+  }
+
+  // ======================
+  // Name sanitize
+  // ======================
+  function sanitizeName(raw){
+    let s = (raw ?? '').trim();
+    s = s.replace(/\s+/g, ' ');
+    // 改行除去
+    s = s.replace(/[\r\n\t]/g, ' ');
+    // 先頭末尾空白
+    s = s.trim();
+    // 文字数
+    if(s.length > 12) s = s.slice(0, 12);
+    return s;
+  }
+
+  function loadLocal(){
+    const n = localStorage.getItem(LS_NAME);
+    if(n) nameInput.value = n;
+    const b = Number(localStorage.getItem(LS_BEST) || 0);
+    localBestScore = Number.isFinite(b) ? b : 0;
+    myBestLabel.textContent = localBestScore ? `${localBestScore}` : '-';
+  }
+
+  function saveName(n){
+    localStorage.setItem(LS_NAME, n);
+  }
+  function saveBest(score){
+    if(score > localBestScore){
+      localBestScore = score;
+      localStorage.setItem(LS_BEST, String(score));
+      myBestLabel.textContent = `${score}`;
+    }
+  }
+
+  // ======================
+  // Canvas sizing
+  // ======================
+  function resizeCanvas(){
+    const rect = canvas.getBoundingClientRect();
+
+    // 非表示や0サイズの瞬間を避ける
+    if(rect.width < 2 || rect.height < 2) return;
+
+    dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    canvas.width = Math.floor(rect.width * dpr);
+    canvas.height = Math.floor(rect.height * dpr);
+    ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // 描画はCSS px基準
+    clearCanvas();
+  }
+
+  function clearCanvas(){
+    if(!ctx) return;
+    const w = canvas.width / dpr;
+    const h = canvas.height / dpr;
+    ctx.fillStyle = '#0b0d12';
+    ctx.fillRect(0, 0, w, h);
+  }
+
+  // ======================
+  // Drawing
+  // ======================
+  function drawSegment(a, b){
+    if(!ctx) return;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#e8e8ea';
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+
+  function redrawResultOverlay(evalResult){
+    // プレイ中はガイドなし。結果だけ理想円を重ねる。
+    resizeCanvas();
+    clearCanvas();
+    if(!ctx) return;
+
+    if(points.length >= 2){
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#e8e8ea';
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for(let i=1;i<points.length;i++){
+        ctx.lineTo(points[i].x, points[i].y);
+      }
+      ctx.stroke();
+    }
+
+    if(evalResult?.valid && evalResult.circle){
+      const {cx, cy, r} = evalResult.circle;
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(122,162,247,.9)';
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI*2);
+      ctx.stroke();
+
+      ctx.fillStyle = 'rgba(122,162,247,.9)';
+      ctx.beginPath();
+      ctx.arc(cx, cy, 3, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+
+  // ======================
+  // Utility math
+  // ======================
+  function dist(a,b){
+    const dx = a.x-b.x, dy=a.y-b.y;
+    return Math.hypot(dx,dy);
+  }
+  function clamp(x, a, b){ return Math.max(a, Math.min(b, x)); }
+
+  function pathLength(pts){
+    let L=0;
+    for(let i=1;i<pts.length;i++) L += dist(pts[i-1], pts[i]);
+    return L;
+  }
+
+  function resampleByStep(pts, step){
+    if(pts.length < 2) return pts.slice();
+    const out = [];
+    out.push({x:pts[0].x, y:pts[0].y, t:pts[0].t});
+    let acc = 0;
+    for(let i=1;i<pts.length;i++){
+      // ここでオブジェクトを直接書き換えない（元配列破壊防止）
+      let x0 = pts[i-1].x, y0 = pts[i-1].y, t0 = pts[i-1].t;
+      const x1 = pts[i].x, y1 = pts[i].y, t1 = pts[i].t;
+
+      let seg = Math.hypot(x1-x0, y1-y0);
+      if(seg === 0) continue;
+
+      let vx = (x1 - x0) / seg;
+      let vy = (y1 - y0) / seg;
+
+      while(acc + seg >= step){
+        const remain = step - acc;
+        const nx = x0 + vx * remain;
+        const ny = y0 + vy * remain;
+        const alpha = remain / seg;
+        const nt = t0 + (t1 - t0) * alpha;
+        out.push({x:nx, y:ny, t:nt});
+        x0 = nx; y0 = ny; t0 = nt;
+        seg -= remain;
+        acc = 0;
+      }
+      acc += seg;
+    }
+    return out;
+  }
+
+  function smooth3(pts){
+    if(pts.length < 3) return pts.slice();
+    const out = pts.map(p => ({...p}));
+    for(let i=1;i<pts.length-1;i++){
+      out[i].x = (pts[i-1].x + pts[i].x + pts[i+1].x)/3;
+      out[i].y = (pts[i-1].y + pts[i].y + pts[i+1].y)/3;
+    }
+    return out;
+  }
+
+  // ======================
+  // Circle fit (Kåsa / linear least squares)
+  // ======================
+  function fitCircleKasa(pts){
+    let Sx=0,Sy=0,Sxx=0,Syy=0,Sxy=0;
+    let Sxz=0,Syz=0,Sz=0;
+    for(const p of pts){
+      const x=p.x, y=p.y;
+      const z = x*x + y*y;
+      Sx += x; Sy += y;
+      Sxx += x*x; Syy += y*y; Sxy += x*y;
+      Sxz += x*z; Syz += y*z; Sz += z;
+    }
+    const n = pts.length;
+
+    const M = [
+      [Sxx, Sxy, Sx],
+      [Sxy, Syy, Sy],
+      [Sx,  Sy,  n ],
+    ];
+    const b = [-Sxz, -Syz, -Sz];
+
+    const sol = solve3x3(M, b);
+    if(!sol) return null;
+    const [A,B,C] = sol;
+    const cx = -A/2;
+    const cy = -B/2;
+    const r2 = cx*cx + cy*cy - C;
+    if(!(r2 > 0)) return null;
+    const r = Math.sqrt(r2);
+    return {cx, cy, r};
+  }
+
+  function solve3x3(M, b){
+    const a = [
+      [M[0][0], M[0][1], M[0][2], b[0]],
+      [M[1][0], M[1][1], M[1][2], b[1]],
+      [M[2][0], M[2][1], M[2][2], b[2]],
+    ];
+    for(let col=0; col<3; col++){
+      let pivot = col;
+      for(let r=col+1;r<3;r++){
+        if(Math.abs(a[r][col]) > Math.abs(a[pivot][col])) pivot = r;
+      }
+      if(Math.abs(a[pivot][col]) < 1e-12) return null;
+      if(pivot !== col){
+        const tmp = a[col]; a[col] = a[pivot]; a[pivot] = tmp;
+      }
+      const div = a[col][col];
+      for(let k=col;k<4;k++) a[col][k] /= div;
+      for(let r=0;r<3;r++){
+        if(r===col) continue;
+        const factor = a[r][col];
+        for(let k=col;k<4;k++){
+          a[r][k] -= factor * a[col][k];
+        }
+      }
+    }
+    return [a[0][3], a[1][3], a[2][3]];
+  }
+
+  // ======================
+  // Metrics
+  // ======================
+  function computeCoverage(pts, cx, cy){
+    const angles = [];
+    for(const p of pts){
+      let a = Math.atan2(p.y - cy, p.x - cx);
+      if(a < 0) a += Math.PI*2;
+      angles.push(a);
+    }
+    angles.sort((a,b)=>a-b);
+    if(angles.length < 2) return 0;
+    let maxGap = 0;
+    for(let i=1;i<angles.length;i++){
+      maxGap = Math.max(maxGap, angles[i]-angles[i-1]);
+    }
+    maxGap = Math.max(maxGap, (angles[0] + Math.PI*2) - angles[angles.length-1]);
+    const coverage = 1 - maxGap / (Math.PI*2);
+    return clamp(coverage, 0, 1);
+  }
+
+  function evaluate(ptsRaw){
+    const w = canvas.width / dpr;
+    const h = canvas.height / dpr;
+    const margin = SETTINGS.edgeMargin;
+
+    // canvasがまだ0なら無効扱い（基本ここには来ない想定）
+    if(w < 2 || h < 2) return {valid:false, reason:'Canvasサイズが不正'};
+
+    if(ptsRaw.length < SETTINGS.minPoints){
+      return {valid:false, reason:'線が短すぎる'};
+    }
+
+    for(const p of ptsRaw){
+      if(p.x < margin || p.x > (w - margin) || p.y < margin || p.y > (h - margin)){
+        return {valid:false, reason:'画面端に食い込んだ'};
+      }
+    }
+
+    let pts = resampleByStep(ptsRaw, SETTINGS.resampleStep);
+    pts = smooth3(pts);
+
+    if(pts.length < SETTINGS.minPoints){
+      return {valid:false, reason:'線が短すぎる'};
+    }
+
+    const circle = fitCircleKasa(pts);
+    if(!circle) return {valid:false, reason:'円として認識できない'};
+
+    const {cx,cy,r} = circle;
+    if(!(r >= SETTINGS.minRadius)) return {valid:false, reason:'半径が小さすぎる'};
+
+    if(cx - r < margin || cx + r > (w - margin) || cy - r < margin || cy + r > (h - margin)){
+      return {valid:false, reason:'円が画面端に食い込んだ'};
+    }
+
+    let sumAbs = 0;
+    let maxAbs = 0;
+    for(const p of pts){
+      const di = Math.hypot(p.x - cx, p.y - cy);
+      const e = Math.abs(di - r);
+      sumAbs += e;
+      maxAbs = Math.max(maxAbs, e);
+    }
+    const mae = (sumAbs / pts.length) / r;
+    const maxe = (maxAbs / r);
+    const close = (dist(pts[0], pts[pts.length-1]) / r);
+    const coverage = computeCoverage(pts, cx, cy);
+
+    const L = pathLength(pts);
+    const targetCirc = 2*Math.PI*r;
+    if(L < targetCirc * 0.50){
+      return {valid:false, reason:'円周の半分未満しか描いていない'};
+    }
+
+    const E = 0.60*mae + 0.20*maxe + 0.10*close + 0.10*(1 - coverage);
+
+    let score;
+    if(E <= SETTINGS.perfectE){
+      score = 100;
+    }else{
+      const raw = 100 * Math.exp(-SETTINGS.scoreK * E);
+      score = Math.round(raw);
+      score = clamp(score, 0, 99);
+    }
+
+    if(coverage < SETTINGS.coveragePenaltyThreshold){
+      const factor = Math.pow(clamp(coverage / SETTINGS.coveragePenaltyThreshold, 0, 1), 2);
+      score = Math.round(score * factor);
+    }
+
+    score = clamp(score, 0, 100);
+
+    const comment = makeComment(score, mae, maxe, close, coverage);
+
+    return {valid:true, score, E, mae, maxe, close, coverage, circle, comment};
+  }
+
+  function makeComment(score, mae, maxe, close, coverage){
+    if(score === 100) return '完璧';
+    if(coverage < 0.85) return '円が一周しきってない';
+    if(close > 0.10) return '終点がズレた';
+    if(maxe > 0.06) return '一部が大きく崩れた';
+    if(mae < 0.01) return 'かなり円っぽい';
+    if(mae < 0.02) return 'いい感じ';
+    if(mae < 0.03) return 'もう少し';
+    return '練習あるのみ';
+  }
+
+  // ======================
+  // Game flow
+  // ======================
+  function resetGame(){
+    activePointerId = null;
+    drawing = false;
+    startTime = 0;
+    points = [];
+    lastPoint = null;
+    lastEval = null;
+
+    clearCanvas();
+    hudHint.textContent = '1本指で円を描く';
+    hudTimer.textContent = '0.0s';
+    gameStatus.textContent = '';
+  }
+
+  // ★修正: viewGame を表示してから resizeCanvas
+  function startGame(){
+    playerNameLabel.textContent = playerName;
+    showView(viewGame);
+
+    requestAnimationFrame(() => {
+      resizeCanvas();
+      resetGame();
+    });
+  }
+
+  function finishAndJudge(){
+    drawing = false;
+    activePointerId = null;
+
+    // ★保険: 判定前にサイズが崩れてないか再取得
+    resizeCanvas();
+
+    if(points.length < 2){
+      gameStatus.textContent = '入力がありません';
+      return;
+    }
+
+    lastEval = evaluate(points);
+    redrawResultOverlay(lastEval);
+
+    if(!lastEval.valid){
+      scoreLabel.textContent = '無効';
+      commentLabel.textContent = lastEval.reason;
+      detailLabel.textContent = '';
+      btnSubmit.disabled = true;
+      resultStatus.textContent = '無効: ' + lastEval.reason;
+    }else{
+      scoreLabel.textContent = String(lastEval.score);
+      commentLabel.textContent = lastEval.comment;
+      detailLabel.textContent =
+        `E=${lastEval.E.toFixed(4)} / mae=${lastEval.mae.toFixed(3)} / max=${lastEval.maxe.toFixed(3)} / close=${lastEval.close.toFixed(3)} / cov=${lastEval.coverage.toFixed(3)}`;
+      btnSubmit.disabled = !firebaseReady; // Firebase準備できてなければ送れない
+      resultStatus.textContent = '';
+      saveBest(lastEval.score);
+    }
+
+    showView(viewResult);
+  }
+
+  function updateTimer(){
+    if(!drawing) return;
+    const t = (performance.now() - startTime) / 1000;
+    hudTimer.textContent = `${t.toFixed(1)}s`;
+    if(t >= SETTINGS.timeLimitSec){
+      hudHint.textContent = '時間切れで判定';
+      finishAndJudge();
+    }
+  }
+
+  function addPoint(x, y){
+    const t = performance.now();
+    const p = {x, y, t};
+
+    if(lastPoint && dist(lastPoint, p) < 1.2) return;
+
+    points.push(p);
+    if(lastPoint) drawSegment(lastPoint, p);
+    lastPoint = p;
+  }
+
+  // ======================
+  // Pointer Events
+  // ======================
+  function getCanvasPoint(e){
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left);
+    const y = (e.clientY - rect.top);
+    return {x, y};
+  }
+
+  function onPointerDown(e){
+    if(activePointerId !== null) return;
+    if(e.pointerType === 'mouse' && e.button !== 0) return;
+
+    // ctxがまだ無い/0サイズの可能性に備えて
+    resizeCanvas();
+    if(!ctx) return;
+
+    activePointerId = e.pointerId;
+    canvas.setPointerCapture(activePointerId);
+
+    drawing = true;
+    startTime = performance.now();
+    points = [];
+    lastPoint = null;
+
+    clearCanvas();
+    hudHint.textContent = '描画中… 指を離したら判定';
+    gameStatus.textContent = '';
+
+    const p = getCanvasPoint(e);
+    addPoint(p.x, p.y);
+  }
+
+  function onPointerMove(e){
+    if(!drawing) return;
+    if(e.pointerId !== activePointerId) return;
+    const p = getCanvasPoint(e);
+    addPoint(p.x, p.y);
+  }
+
+  function onPointerUp(e){
+    if(!drawing) return;
+    if(e.pointerId !== activePointerId) return;
+
+    try{ canvas.releasePointerCapture(activePointerId); }catch(_){}
+    hudHint.textContent = '判定中…';
+    finishAndJudge();
+  }
+
+  function onPointerCancel(e){
+    if(e.pointerId !== activePointerId) return;
+    drawing = false;
+    activePointerId = null;
+    gameStatus.textContent = '入力がキャンセルされました';
+  }
+
+  // ======================
+  // Firebase
+  // ======================
+  function initFirebase(){
+    const cfgOk = firebaseConfig && firebaseConfig.apiKey && firebaseConfig.apiKey !== 'YOUR_API_KEY';
+    if(!cfgOk){
+      firebaseReady = false;
+      lbStatus.textContent = 'Firebase未設定: ランキングは無効';
+      btnSubmit.disabled = true;
+      return;
+    }
+
+    try{
+      firebase.initializeApp(firebaseConfig);
+      db = firebase.database();
+
+      firebase.auth().onAuthStateChanged((user)=>{
+        if(user){
+          uid = user.uid;
+          firebaseReady = true;
+          lbStatus.textContent = '';
+          // 結果画面にいるなら送信ボタンを有効化（有効スコア時のみ）
+          if(viewResult.classList.contains('active') && lastEval?.valid) btnSubmit.disabled = false;
+        }else{
+          firebaseReady = false;
+          uid = null;
+          btnSubmit.disabled = true;
+        }
+      });
+
+      firebase.auth().signInAnonymously().catch(err=>{
+        firebaseReady = false;
+        lbStatus.textContent = '匿名認証に失敗: ' + (err?.message || err);
+        btnSubmit.disabled = true;
+      });
+    }catch(e){
+      firebaseReady = false;
+      lbStatus.textContent = 'Firebase初期化に失敗: ' + (e?.message || e);
+      btnSubmit.disabled = true;
+    }
+  }
+
+  async function submitScore(){
+    if(!lastEval?.valid){
+      resultStatus.textContent = '送信できません（無効）';
+      return;
+    }
+    if(!firebaseReady || !uid || !db){
+      resultStatus.textContent = 'Firebase未準備で送信できません';
+      return;
+    }
+
+    const score = lastEval.score;
+    const name = playerName;
+    const path = `/circle/leaderboard/${uid}`;
+    resultStatus.textContent = '送信中…';
+
+    const ref = db.ref(path);
+    try{
+      await ref.transaction((cur)=>{
+        if(!cur || typeof cur.bestScore !== 'number' || score > cur.bestScore){
+          return {
+            name,
+            bestScore: score,
+            updatedAt: firebase.database.ServerValue.TIMESTAMP
+          };
+        }
+        return;
+      });
+
+      resultStatus.textContent = '送信OK';
+      await loadLeaderboard();
+    }catch(e){
+      resultStatus.textContent = '送信失敗: ' + (e?.message || e);
+    }
+  }
+
+  async function loadLeaderboard(){
+    lbList.innerHTML = '';
+    if(!firebaseReady || !db){
+      lbStatus.textContent = 'Firebase未設定: ランキングは表示できません';
+      return;
+    }
+    lbStatus.textContent = '読み込み中…';
+
+    const q = db.ref('/circle/leaderboard').orderByChild('bestScore').limitToLast(20);
+    try{
+      const snap = await q.get();
+      const arr = [];
+      snap.forEach(child=>{
+        const v = child.val() || {};
+        arr.push({ id: child.key, name: v.name ?? '-', bestScore: Number(v.bestScore ?? 0), updatedAt: Number(v.updatedAt ?? 0) });
+      });
+
+      arr.sort((a,b)=>{
+        if(b.bestScore !== a.bestScore) return b.bestScore - a.bestScore;
+        return b.updatedAt - a.updatedAt;
+      });
+
+      lbList.innerHTML = '';
+      arr.forEach((it, i)=>{
+        const div = document.createElement('div');
+        div.className = 'lbItem' + ((uid && it.id === uid) ? ' hl' : '');
+        div.innerHTML = `
+          <div class="lbLeft">
+            <div class="rank">${i+1}</div>
+            <div>
+              <div class="name">${escapeHtml(it.name)}</div>
+              <div class="tiny">${(it.id === uid) ? 'あなた' : ''}</div>
+            </div>
+          </div>
+          <div class="score">${it.bestScore}</div>
+        `;
+        lbList.appendChild(div);
+      });
+
+      lbStatus.textContent = arr.length ? '' : 'データがありません';
+    }catch(e){
+      lbStatus.textContent = '読み込み失敗: ' + (e?.message || e);
+    }
+  }
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, (c)=>({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
+
+  // ======================
+  // UI events
+  // ======================
+  function ensureNameOrWarn(){
+    const n = sanitizeName(nameInput.value);
+    if(!n){
+      alert('名前を入力してください');
+      return null;
+    }
+    playerName = n;
+    saveName(playerName);
+    return playerName;
+  }
+
+  btnStart.addEventListener('click', ()=>{
+    const n = ensureNameOrWarn();
+    if(!n) return;
+    startGame();
+  });
+
+  btnGoLB.addEventListener('click', async ()=>{
+    const n = sanitizeName(nameInput.value);
+    if(n){
+      playerName = n;
+      saveName(playerName);
+    }
+    showView(viewLB);
+    await loadLeaderboard();
+  });
+
+  btnReset.addEventListener('click', resetGame);
+  btnBackTitle.addEventListener('click', ()=>{ showView(viewTitle); resetGame(); });
+
+  btnAgain.addEventListener('click', ()=>{ showView(viewGame); resetGame(); });
+  btnResultToTitle.addEventListener('click', ()=>{ showView(viewTitle); resetGame(); });
+
+  btnSubmit.addEventListener('click', submitScore);
+  btnToLB.addEventListener('click', async ()=>{
+    showView(viewLB);
+    await loadLeaderboard();
+  });
+
+  btnLBBack.addEventListener('click', ()=>{
+    showView(viewTitle);
+  });
+  btnLBReload.addEventListener('click', loadLeaderboard);
+
+  nameInput.addEventListener('input', ()=>{
+    const n = sanitizeName(nameInput.value);
+    if(nameInput.value !== n) nameInput.value = n;
+  });
+
+  // ======================
+  // Init
+  // ======================
+  function main(){
+    loadLocal();
+    playerName = sanitizeName(nameInput.value);
+
+    // タイトル画面ではcanvasが非表示なので、ここでのresizeは効かないことがある
+    // → startGame() 側で確実にやる
+    window.addEventListener('resize', () => {
+      // 画面が見えてるときだけ再計算（0サイズ回避）
+      if(viewGame.classList.contains('active') || viewResult.classList.contains('active')) {
+        resizeCanvas();
+      }
+    });
+
+    canvas.addEventListener('pointerdown', onPointerDown);
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerup', onPointerUp);
+    canvas.addEventListener('pointercancel', onPointerCancel);
+
+    (function loop(){
+      updateTimer();
+      requestAnimationFrame(loop);
+    })();
+
+    const waitFirebase = setInterval(()=>{
+      if(window.firebase && window.firebase.initializeApp){
+        clearInterval(waitFirebase);
+        initFirebase();
+      }
+    }, 50);
+  }
+
+  window.addEventListener('DOMContentLoaded', main);
+  </script>
+</body>
+</html>
