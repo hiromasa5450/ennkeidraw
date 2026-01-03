@@ -324,6 +324,16 @@
   let uid = null;
   let db = null;
 
+  // ★追加: 送信時に「Auth準備完了」を待つため
+  let authReadyResolver = null;
+  let authReadyPromise = new Promise((res) => (authReadyResolver = res));
+  function markAuthReady(){
+    if(authReadyResolver){
+      authReadyResolver();
+      authReadyResolver = null;
+    }
+  }
+
   // ======================
   // View helper
   // ======================
@@ -338,11 +348,8 @@
   function sanitizeName(raw){
     let s = (raw ?? '').trim();
     s = s.replace(/\s+/g, ' ');
-    // 改行除去
     s = s.replace(/[\r\n\t]/g, ' ');
-    // 先頭末尾空白
     s = s.trim();
-    // 文字数
     if(s.length > 12) s = s.slice(0, 12);
     return s;
   }
@@ -407,7 +414,7 @@
   }
 
   function redrawResultOverlay(evalResult){
-    // プレイ中はガイドなし。結果だけ理想円を重ねる。
+    // 結果だけ理想円を重ねる（プレイ中は出さない）
     resizeCanvas();
     clearCanvas();
     if(!ctx) return;
@@ -461,7 +468,6 @@
     out.push({x:pts[0].x, y:pts[0].y, t:pts[0].t});
     let acc = 0;
     for(let i=1;i<pts.length;i++){
-      // ここでオブジェクトを直接書き換えない（元配列破壊防止）
       let x0 = pts[i-1].x, y0 = pts[i-1].y, t0 = pts[i-1].t;
       const x1 = pts[i].x, y1 = pts[i].y, t1 = pts[i].t;
 
@@ -584,13 +590,13 @@
     const h = canvas.height / dpr;
     const margin = SETTINGS.edgeMargin;
 
-    // canvasがまだ0なら無効扱い（基本ここには来ない想定）
     if(w < 2 || h < 2) return {valid:false, reason:'Canvasサイズが不正'};
 
     if(ptsRaw.length < SETTINGS.minPoints){
       return {valid:false, reason:'線が短すぎる'};
     }
 
+    // edge invalid: any point too close to edge
     for(const p of ptsRaw){
       if(p.x < margin || p.x > (w - margin) || p.y < margin || p.y > (h - margin)){
         return {valid:false, reason:'画面端に食い込んだ'};
@@ -610,6 +616,7 @@
     const {cx,cy,r} = circle;
     if(!(r >= SETTINGS.minRadius)) return {valid:false, reason:'半径が小さすぎる'};
 
+    // fitted circle must not touch edge
     if(cx - r < margin || cx + r > (w - margin) || cy - r < margin || cy + r > (h - margin)){
       return {valid:false, reason:'円が画面端に食い込んだ'};
     }
@@ -624,6 +631,7 @@
     }
     const mae = (sumAbs / pts.length) / r;
     const maxe = (maxAbs / r);
+
     const close = (dist(pts[0], pts[pts.length-1]) / r);
     const coverage = computeCoverage(pts, cx, cy);
 
@@ -644,6 +652,7 @@
       score = clamp(score, 0, 99);
     }
 
+    // coverage penalty (大幅減点)
     if(coverage < SETTINGS.coveragePenaltyThreshold){
       const factor = Math.pow(clamp(coverage / SETTINGS.coveragePenaltyThreshold, 0, 1), 2);
       score = Math.round(score * factor);
@@ -684,7 +693,7 @@
     gameStatus.textContent = '';
   }
 
-  // ★修正: viewGame を表示してから resizeCanvas
+  // 重要: viewGame を表示してから resizeCanvas
   function startGame(){
     playerNameLabel.textContent = playerName;
     showView(viewGame);
@@ -699,7 +708,7 @@
     drawing = false;
     activePointerId = null;
 
-    // ★保険: 判定前にサイズが崩れてないか再取得
+    // 保険: 判定前にサイズが崩れてないか再取得
     resizeCanvas();
 
     if(points.length < 2){
@@ -721,8 +730,11 @@
       commentLabel.textContent = lastEval.comment;
       detailLabel.textContent =
         `E=${lastEval.E.toFixed(4)} / mae=${lastEval.mae.toFixed(3)} / max=${lastEval.maxe.toFixed(3)} / close=${lastEval.close.toFixed(3)} / cov=${lastEval.coverage.toFixed(3)}`;
-      btnSubmit.disabled = !firebaseReady; // Firebase準備できてなければ送れない
+
+      // Auth準備中の可能性があるので、ここでは「未準備ならdisabled」
+      btnSubmit.disabled = !firebaseReady;
       resultStatus.textContent = '';
+
       saveBest(lastEval.score);
     }
 
@@ -787,6 +799,7 @@
   function onPointerMove(e){
     if(!drawing) return;
     if(e.pointerId !== activePointerId) return;
+
     const p = getCanvasPoint(e);
     addPoint(p.x, p.y);
   }
@@ -828,8 +841,12 @@
           uid = user.uid;
           firebaseReady = true;
           lbStatus.textContent = '';
-          // 結果画面にいるなら送信ボタンを有効化（有効スコア時のみ）
-          if(viewResult.classList.contains('active') && lastEval?.valid) btnSubmit.disabled = false;
+          markAuthReady(); // ★追加: Auth準備完了を通知
+
+          // 結果画面で有効スコアがあるなら、送信を押せる状態に戻す
+          if(viewResult.classList.contains('active') && lastEval?.valid){
+            btnSubmit.disabled = false;
+          }
         }else{
           firebaseReady = false;
           uid = null;
@@ -849,14 +866,24 @@
     }
   }
 
+  // ★修正: 送信時にAuth準備完了を待つ（スマホで2回押し問題を解消）
   async function submitScore(){
     if(!lastEval?.valid){
       resultStatus.textContent = '送信できません（無効）';
       return;
     }
+
     if(!firebaseReady || !uid || !db){
-      resultStatus.textContent = 'Firebase未準備で送信できません';
-      return;
+      resultStatus.textContent = '接続準備中…';
+      try{
+        await Promise.race([
+          authReadyPromise,
+          new Promise((_, rej)=>setTimeout(()=>rej(new Error('timeout')), 3000))
+        ]);
+      }catch(_){
+        resultStatus.textContent = '接続が完了していません（少し待って再度）';
+        return;
+      }
     }
 
     const score = lastEval.score;
@@ -898,7 +925,12 @@
       const arr = [];
       snap.forEach(child=>{
         const v = child.val() || {};
-        arr.push({ id: child.key, name: v.name ?? '-', bestScore: Number(v.bestScore ?? 0), updatedAt: Number(v.updatedAt ?? 0) });
+        arr.push({
+          id: child.key,
+          name: v.name ?? '-',
+          bestScore: Number(v.bestScore ?? 0),
+          updatedAt: Number(v.updatedAt ?? 0)
+        });
       });
 
       arr.sort((a,b)=>{
@@ -977,9 +1009,7 @@
     await loadLeaderboard();
   });
 
-  btnLBBack.addEventListener('click', ()=>{
-    showView(viewTitle);
-  });
+  btnLBBack.addEventListener('click', ()=>{ showView(viewTitle); });
   btnLBReload.addEventListener('click', loadLeaderboard);
 
   nameInput.addEventListener('input', ()=>{
@@ -994,11 +1024,8 @@
     loadLocal();
     playerName = sanitizeName(nameInput.value);
 
-    // タイトル画面ではcanvasが非表示なので、ここでのresizeは効かないことがある
-    // → startGame() 側で確実にやる
     window.addEventListener('resize', () => {
-      // 画面が見えてるときだけ再計算（0サイズ回避）
-      if(viewGame.classList.contains('active') || viewResult.classList.contains('active')) {
+      if(viewGame.classList.contains('active') || viewResult.classList.contains('active')){
         resizeCanvas();
       }
     });
